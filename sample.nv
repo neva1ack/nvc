@@ -1,0 +1,21 @@
+fun add(a: Int, b:Int) -> Int(
+
+
+        )
+
+#
+fun add(a: Int,
+        b: Int,
+) -> Int(
+    a + b
+)
+
+type Data(
+    a: Int,
+    b: Int,
+)
+
+fun Data.add(self: Data) -> Int(
+    self.a + self.b
+)
+#
