@@ -1,8 +1,13 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef NVC_LEXER_H
 #define NVC_LEXER_H
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 typedef enum {
     NVC_OP_UNKNOWN = -1,
@@ -39,6 +44,11 @@ typedef enum {
 } nvc_operator_kind_t;
 
 typedef enum {
+    NVC_SPEC_TOK_NEWLINE = 0,
+    NVC_SPEC_TOK_EOF = 1,
+} nvc_special_kind_t;
+
+typedef enum {
     NVC_TOK_UNKNOWN = -1,
 
     // string literals
@@ -55,15 +65,21 @@ typedef enum {
     NVC_TOK_OP = 30,
 
     // special tokens
-    NVC_TOK_NEWLINE = 100,
-    NVC_TOK_EOF = 101,
+    NVC_TOK_SPECIAL = 100,
 } nvc_tok_kind_t;
 
 typedef struct {
     nvc_tok_kind_t kind;
+    // note: next 4 fields are used for reporting errors/warnings
+    char* bufname;  // this does NOT need to be freed, it is not owned
+    char* line;     // this does NOT need to be freed, it is just a reference
+                    // into the passed buffer
+    uint32_t l, c;  // line number and char number in source of token (for
+                    // errors/warnings)
     union {
         int64_t int_lit;
         double float_lit;
+        nvc_special_kind_t spec_kind;
         nvc_operator_kind_t op_kind;
         char* symbol;   // this must be freed after use and will never be NULL
         char* str_lit;  // this must be freed after use UNLESS NULL because
@@ -76,9 +92,16 @@ typedef struct {
     size_t size;
 } nvc_token_stream_t;
 
+char* nvc_op_to_str(nvc_operator_kind_t op);
+
 void nvc_free_token_stream(nvc_token_stream_t* stream);
 
-// note: this method frees buf
-nvc_token_stream_t* nvc_lexical_analysis(char* buf, long bufsz);
+char* nvc_token_to_str(nvc_tok_t* token);
+
+nvc_token_stream_t* nvc_lexical_analysis(char* bufname, char* buf, long bufsz);
 
 #endif  // NVC_LEXER_H
+
+#ifdef __cplusplus
+}
+#endif

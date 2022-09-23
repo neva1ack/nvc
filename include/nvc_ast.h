@@ -1,3 +1,7 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef NVC_AST_H
 #define NVC_AST_H
 
@@ -47,9 +51,13 @@ typedef struct {
         fun_name;  // both of these fields are freed when nvc_free_token_stream
     char* return_type_name;  // is called on the nvc_token_stream_t used as a
                              // parameter to create this nvc_ast_t with
-                             // nvc_parse_t
-    nvc_fun_param_decl_t** params;  // this and the pointers pointed to must be freed after use
+                             // nvc_parse_t note: return_type_name may be NULL
+    nvc_fun_param_decl_t** params;  // this and the pointers pointed to MUST be
+                                    // freed after use UNLESS it is NULL
     size_t n_params;
+    nvc_ast_node_t** body;  // this and the pointers pointed to must be freed
+                            // after use UNLESS it is NULL
+    size_t body_len;
     // TODO: fun body
 } nvc_ast_fun_decl_t;
 
@@ -81,3 +89,7 @@ void nvc_free_ast(nvc_ast_t* ast);
 nvc_ast_t* nvc_parse(nvc_token_stream_t* stream);
 
 #endif  // NVC_AST_H
+
+#ifdef __cplusplus
+}
+#endif

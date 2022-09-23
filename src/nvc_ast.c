@@ -1,5 +1,10 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <nvc_ast.h>
 
+#include <nvc_output.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +18,8 @@ static void nvc_free_params(nvc_fun_param_decl_t** params, size_t size) {
     }
 }
 
+static void nvc_free_nodes(nvc_ast_node_t** nodes, size_t size);
+
 static void nvc_free_nodes_recursive(nvc_ast_node_t* node) {
     if (node) {
         // TODO: dont forget to free anything added here
@@ -22,6 +29,7 @@ static void nvc_free_nodes_recursive(nvc_ast_node_t* node) {
                 nvc_free_nodes_recursive(node->binary_op.rhs);
                 break;
             case NVC_AST_NODE_FUN_DECL:
+                nvc_free_nodes(node->fun_decl.body, node->fun_decl.body_len);
                 nvc_free_params(node->fun_decl.params, node->fun_decl.n_params);
                 break;
             case NVC_AST_NODE_LET_ASSIGN:
@@ -64,8 +72,10 @@ static void nvc_print_ast_recursive(nvc_ast_node_t* node) {
                         node->fun_decl.params[i]->type_name);
             }
             fprintf(stdout, ") -> %s(", node->fun_decl.return_type_name);
-            // TODO: print body
-            // nvc_print_ast_recursive();
+            // TODO: print body pretty
+            for (size_t i = 0; i < node->fun_decl.body_len; ++i) {
+                nvc_print_ast_recursive(node->fun_decl.body[i]);
+            }
             fputc(')', stdout);
             break;
         case NVC_AST_NODE_STRING_LIT:
@@ -105,36 +115,36 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
         fprintf(stderr, "parsing error: recursive call on empty stream.\n");
         goto error;
     }
-    // base case
+
+    // parse single token nodes
     if (stream.size == 1) {
         switch (stream.tokens->kind) {
             case NVC_TOK_INT_LIT: {
                 *eaten = 1;
-                nvc_ast_node_t* node = calloc(1, sizeof(nvc_ast_node_t));
+                nvc_ast_node_t* node = malloc(sizeof(nvc_ast_node_t));
                 node->kind = NVC_AST_NODE_INT_LIT;
                 node->i = stream.tokens->int_lit;
                 return node;
             }
             case NVC_TOK_FLOAT_LIT: {
                 *eaten = 1;
-                nvc_ast_node_t* node = calloc(1, sizeof(nvc_ast_node_t));
+                nvc_ast_node_t* node = malloc(sizeof(nvc_ast_node_t));
                 node->kind = NVC_AST_NODE_FLOAT_LIT;
                 node->d = stream.tokens->float_lit;
                 return node;
             }
             case NVC_TOK_STR_LIT: {
                 *eaten = 1;
-                nvc_ast_node_t* node = calloc(1, sizeof(nvc_ast_node_t));
+                nvc_ast_node_t* node = malloc(sizeof(nvc_ast_node_t));
                 node->kind = NVC_AST_NODE_STRING_LIT;
                 node->str_lit = stream.tokens->str_lit;
                 return node;
             }
-            case NVC_TOK_OP:
-                // TODO: this is most likely illegal
             case NVC_TOK_SYMBOL:
                 // TODO: probably generate a reference of some kind here
-            case NVC_TOK_NEWLINE:
-            case NVC_TOK_EOF:
+            case NVC_TOK_OP:
+                // TODO: this is illegal there are no 0-operand operators
+            case NVC_TOK_SPECIAL:
             case NVC_TOK_UNKNOWN:
                 fprintf(stderr,
                         "parsing error: recursive call on illegal or unknown "
@@ -146,53 +156,63 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
     if (stream.tokens->kind == NVC_TOK_SYMBOL) {
         // scan for let keyword
         if (strncmp(stream.tokens->symbol, "let", 4) == 0) {
-            // find next eof/newline
+            // eat newlines
             nvc_tok_t* ptr = stream.tokens;
-            while (++ptr &&
-                   (ptr->kind != NVC_TOK_NEWLINE && ptr->kind != NVC_TOK_EOF))
+            while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                   ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
                 ;
-            // must be at least 4 tokens in a let assign
-            // e.g. symbol(let) symbol(var_name) op(4) int_lit(2)
-            size_t rem_tokens = ptr - stream.tokens;
-            if (rem_tokens < 4) {
-                // TODO: syntax error
-                fprintf(stderr,
-                        "syntax error: invalid let decl only %ld"
-                        "tokens need at least 4.\n",
-                        rem_tokens);
+            // check 1st token is a symbol (var name)
+            if (!ptr || ptr->kind != NVC_TOK_SYMBOL) {
+                nvc_print_unexpected_token(ptr);
+                fprintf(stderr, "note: expected symbol(<var_name>).\n");
                 goto error;
             }
+            char* var_name = ptr->symbol;
+            // eat newlines (nom nom nom)
+            while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                   ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
+                ;
+            // check 2nd token is '=' op
+            if (!ptr || ptr->kind != NVC_TOK_OP || ptr->op_kind != NVC_OP_EQ) {
+                nvc_print_unexpected_token(ptr);
+                fprintf(stderr, "note: expected op(%s).\n",
+                        nvc_op_to_str(NVC_OP_EQ));
+                goto error;
+            }
+            // eat newlines (nom nom nom)
+            while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                   ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
+                ;
 
-            *eaten = rem_tokens;
+            size_t subrem = ptr - stream.tokens;
+            // remaining tokens stream
+            nvc_token_stream_t let_rvalue_expr_stream = {
+                .tokens = ptr, .size = stream.size - subrem};
+
+            fprintf(stdout, "parsing let rvalue stream:\n");
+
+            for (size_t i = 0; i < let_rvalue_expr_stream.size; ++i) {
+                char* tokstr =
+                    nvc_token_to_str(let_rvalue_expr_stream.tokens + i);
+                fprintf(stdout, "\t%s\n", tokstr);
+                free(tokstr);
+            }
+
             size_t sub_eaten = 0;
-
-            nvc_token_stream_t sub_stream = {.tokens = stream.tokens + 3,
-                                             .size = rem_tokens - 3};
-
-            nvc_ast_node_t* rhs =
-                nvc_parse_recursive(sub_stream, &sub_eaten, depth + 1);
-
+            nvc_ast_node_t* rhs = nvc_parse_recursive(let_rvalue_expr_stream,
+                                                      &sub_eaten, depth + 1);
             if (!rhs) {
-                // TODO: syntax error
-                // note: error is reported by recursive call so that will
-                // fprintf
+                // recursive call will emit error
                 goto error;
             }
 
-            if (sub_eaten != sub_stream.size) {
-                // TODO: syntax error
-                fprintf(stderr,
-                        "syntax error: let rhs parse recursive call must eat "
-                        "all %ld tokens.\n",
-                        rem_tokens - 3);
-                free(rhs);
-                goto error;
-            }
+            *eaten = subrem + sub_eaten;
+            fprintf(stdout, "eaten: %ld\n", *eaten);
 
             nvc_ast_node_t* let_assign = calloc(1, sizeof(nvc_ast_node_t));
             if (!let_assign) {
                 fprintf(stderr, "Out of memory!\n");
-                free(rhs);
+                nvc_free_nodes_recursive(rhs);
                 goto error;
             }
             let_assign->kind = NVC_AST_NODE_LET_ASSIGN;
@@ -203,13 +223,79 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
             let_assign->let_assign.rhs = rhs;
 
             return let_assign;
+
+            //            // eat newlines
+            //            nvc_tok_t* ptr = stream.tokens;
+            //            while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+            //                   ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
+            //                ;
+            //            // must be at least 4 tokens in a let assign
+            //            // e.g. symbol(let) symbol(var_name) op(4) int_lit(2)
+            //            size_t rem_tokens = ptr - stream.tokens;
+            //            if (rem_tokens < 4) {
+            //                // TODO: syntax error
+            //                fprintf(stderr,
+            //                        "syntax error: invalid let decl only %ld"
+            //                        "tokens need at least 4.\n",
+            //                        rem_tokens);
+            //                goto error;
+            //            }
+            //
+            //            *eaten = rem_tokens;
+            //            size_t sub_eaten = 0;
+            //
+            //            nvc_token_stream_t sub_stream = {.tokens =
+            //            stream.tokens + 3,
+            //                                             .size = rem_tokens -
+            //                                             3};
+            //
+            //            nvc_ast_node_t* rhs =
+            //                nvc_parse_recursive(sub_stream, &sub_eaten, depth
+            //                + 1);
+            //
+            //            if (!rhs) {
+            //                // TODO: syntax error
+            //                // note: error is reported by recursive call so
+            //                that will
+            //                // fprintf
+            //                goto error;
+            //            }
+            //
+            //            if (sub_eaten != sub_stream.size) {
+            //                // TODO: syntax error
+            //                fprintf(stderr,
+            //                        "syntax error: let rhs parse recursive
+            //                        call must eat " "all %ld tokens.\n",
+            //                        rem_tokens - 3);
+            //                nvc_free_nodes_recursive(rhs);
+            //                goto error;
+            //            }
+            //
+            //            nvc_ast_node_t* let_assign = calloc(1,
+            //            sizeof(nvc_ast_node_t)); if (!let_assign) {
+            //                fprintf(stderr, "Out of memory!\n");
+            //                nvc_free_nodes_recursive(rhs);
+            //                goto error;
+            //            }
+            //            let_assign->kind = NVC_AST_NODE_LET_ASSIGN;
+            //            // use token symbol note: this means it will be free
+            //            when the
+            //            // backing memory of the tokens is freed aka when the
+            //            final
+            //            // nvc_free_token_stream is called
+            //            let_assign->let_assign.symbol =
+            //            stream.tokens[1].symbol; let_assign->let_assign.rhs =
+            //            rhs;
+            //
+            //            return let_assign;
         }
         // scan for fun keyword
         else if (strncmp(stream.tokens->symbol, "fun", 4) == 0) {
             fprintf(stdout, "parsing fun.\n");
             // eat newlines
             nvc_tok_t* ptr = stream.tokens;
-            while (++ptr && ptr->kind == NVC_TOK_NEWLINE)
+            while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                   ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
                 ;
             // check 1st token is a symbol (function name)
             if (!ptr || ptr->kind != NVC_TOK_SYMBOL) {
@@ -220,7 +306,8 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
             }
             char* fun_name = ptr->symbol;
             // eat more newlines (nom nom nom)
-            while (++ptr && ptr->kind == NVC_TOK_NEWLINE)
+            while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                   ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
                 ;
             // check 2nd token is an (
             if (!ptr || ptr->kind != NVC_TOK_OP ||
@@ -230,7 +317,8 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
                 goto error;
             }
             // eat more newlines (nom nom nom)
-            while (++ptr && ptr->kind == NVC_TOK_NEWLINE)
+            while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                   ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
                 ;
             // parse param decl list
             // syntax: symbol(param_name) op(17) symbol(type_name) op(23)
@@ -238,16 +326,38 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
             //                                          optional for the last
             //                                          param
             size_t n_params = 0;
-            size_t capacity = 1 << 3;
+            // predict capacity by how many : before the ) note: this could
+            // probably go horribly wrong if bad syntax
+            size_t capacity = 0;
+            // own scope to "hide" end_ptr
+            {
+                nvc_tok_t* end_ptr = ptr;
+                while (++end_ptr) {
+                    if (end_ptr->kind == NVC_TOK_OP &&
+                        end_ptr->op_kind == NVC_OP_RPAREN)
+                        break;
+                    else if (end_ptr->kind == NVC_TOK_SPECIAL &&
+                             end_ptr->spec_kind == NVC_SPEC_TOK_EOF) {
+                        fprintf(stderr,
+                                "syntax error: malformed fun decl: unclosed "
+                                "param list decl.\n");
+                        goto error;
+                    } else if (end_ptr->kind == NVC_TOK_OP &&
+                               end_ptr->op_kind == NVC_OP_TYPE_ANNOTATION)
+                        ++capacity;
+                }
+            }
+
             nvc_fun_param_decl_t** params =
                 calloc(capacity, sizeof(nvc_fun_param_decl_t*));
             if (!params) {
                 fprintf(stderr, "Out of memory!\n");
                 goto error;
             }
-            while (1) {
+            while (ptr && ptr->kind != NVC_TOK_OP ||
+                   ptr->op_kind != NVC_OP_RPAREN) {
                 // check for param name
-                if (!ptr || ptr->kind != NVC_TOK_SYMBOL) {
+                if (ptr->kind != NVC_TOK_SYMBOL) {
                     fprintf(stderr,
                             "syntax error: malformed fun decl: missing param "
                             "name.\n");
@@ -256,7 +366,8 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
                 }
                 char* param_name = ptr->symbol;
                 // eat more newlines (nom nom nom)
-                while (++ptr && ptr->kind == NVC_TOK_NEWLINE)
+                while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                       ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
                     ;
                 // check for type annotation
                 if (!ptr || ptr->kind != NVC_TOK_OP ||
@@ -268,7 +379,8 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
                     goto error;
                 }
                 // eat more newlines (nom nom nom)
-                while (++ptr && ptr->kind == NVC_TOK_NEWLINE)
+                while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                       ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
                     ;
                 // check for type name
                 if (!ptr || ptr->kind != NVC_TOK_SYMBOL) {
@@ -280,7 +392,8 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
                 }
                 char* param_type_name = ptr->symbol;
                 // eat more newlines (nom nom nom)
-                while (++ptr && ptr->kind == NVC_TOK_NEWLINE)
+                while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                       ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
                     ;
 
                 if (!ptr) {
@@ -289,7 +402,7 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
                     goto error;
                 }
 
-                // append param
+                // create param
                 nvc_fun_param_decl_t* param_decl =
                     calloc(1, sizeof(nvc_fun_param_decl_t));
                 if (!param_decl) {
@@ -300,18 +413,16 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
                 param_decl->param_name = param_name;
                 param_decl->type_name = param_type_name;
 
-                params[n_params] = param_decl;
-                ++n_params;
-
                 // dynamic allocation
                 if (n_params >= capacity) {
                     // increase by 50%
                     capacity = (n_params / 2) * 3;
                     // TODO: remove me
-                    fprintf(stdout, "Dynamic allocation %ld -> %ld.\n",
+                    fprintf(stdout, "Dynamic allocation (params) %ld -> %ld.\n",
                             n_params, capacity);
                     // reallocate with increased capacity
-                    params = calloc(capacity, sizeof(nvc_fun_param_decl_t*));
+                    params = realloc(params,
+                                     capacity * sizeof(nvc_fun_param_decl_t*));
                     if (!params) {
                         fprintf(stderr, "Out of memory!\n");
                         nvc_free_params(params, n_params);
@@ -319,11 +430,16 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
                     }
                 }
 
+                // insert param
+                params[n_params] = param_decl;
+                ++n_params;
+
                 // if hits ')' end param list
                 if (ptr->kind == NVC_TOK_OP && ptr->op_kind == NVC_OP_RPAREN) {
+                    fprintf(stdout, "end param list, no optional ','.\n");
                     break;
                 }
-                // else check for ','
+                // else make sure comma is there
                 else if (ptr->kind != NVC_TOK_OP ||
                          ptr->op_kind != NVC_OP_COMMA) {
                     fprintf(stderr,
@@ -332,14 +448,37 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
                     nvc_free_params(params, n_params);
                     goto error;
                 }
-                // check enclosing ')' in case of optional ','
-                if (++ptr && ptr->kind == NVC_TOK_OP &&
-                    ptr->op_kind == NVC_OP_RPAREN) {
-                    break;
+
+                // eat more newlines (nom nom nom)
+                while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                       ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
+                    ;
+
+                //                    fprintf(stderr,
+                //                            "syntax error: malformed fun decl:
+                //                            unknown token in param list.\n");
+                //                    nvc_free_params(params, n_params);
+                //                    goto error;
+            }
+
+            if (n_params == 0) {
+                // nothing is allocated so just set ptr to NULL to avoid
+                // confusion
+                params = NULL;
+            } else {
+                // realloc params to minimal size
+                params =
+                    realloc(params, n_params * sizeof(nvc_fun_param_decl_t*));
+                if (!params) {
+                    fprintf(stderr, "Out of memory!\n");
+                    nvc_free_params(params, n_params);
+                    goto error;
                 }
             }
+
             // eat more newlines (nom nom nom)
-            while (++ptr && ptr->kind == NVC_TOK_NEWLINE)
+            while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                   ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
                 ;
             // check for return decl
             if (!ptr || ptr->kind != NVC_TOK_OP ||
@@ -351,25 +490,110 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
                 goto error;
             }
             // eat more newlines (nom nom nom)
-            while (++ptr && ptr->kind == NVC_TOK_NEWLINE)
+            while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                   ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
                 ;
-            // check for return type name
-            if (!ptr || ptr->kind != NVC_TOK_SYMBOL) {
+
+            if (!ptr) {
                 fprintf(stderr,
-                        "syntax error: malformed fun decl: missing return type "
-                        "name.\n");
+                        "syntax error: malformed fun decl: missing token after "
+                        "return decl.\n");
                 nvc_free_params(params, n_params);
                 goto error;
             }
-            char* return_type_name = ptr->symbol;
+            char* return_type_name = NULL;
+            // check for return type name
+            if (ptr->kind == NVC_TOK_SYMBOL) {
+                return_type_name = ptr->symbol;
+                // eat more newlines (nom nom nom)
+                while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                       ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
+                    ;
+                // check for ( after return type name
+                if (!ptr || ptr->kind != NVC_TOK_OP ||
+                    ptr->op_kind != NVC_OP_LPAREN) {
+                    fprintf(stderr,
+                            "syntax error: malformed fun decl: missing (.\n");
+                    nvc_free_params(params, n_params);
+                    goto error;
+                }
+            }
+            // void return type
+            else if (ptr->kind == NVC_TOK_OP && ptr->op_kind == NVC_OP_LPAREN) {
+                return_type_name = NULL;
+            } else {
+                fprintf(stderr,
+                        "syntax error: malformed fun decl: unknown token after "
+                        "return decl, must be return type name or opening fun "
+                        "body '('.\n");
+                nvc_free_params(params, n_params);
+                goto error;
+            }
+            // eat more newlines (nom nom nom)
+            while (++ptr && ptr->kind == NVC_TOK_SPECIAL &&
+                   ptr->spec_kind == NVC_SPEC_TOK_NEWLINE)
+                ;
+            if (!ptr) {
+                fprintf(stderr,
+                        "syntax error: malformed fun decl: unknown error in "
+                        "fun body.\n");
+                nvc_free_params(params, n_params);
+                goto error;
+            }
 
-            // TODO: body
+            nvc_ast_node_t** body_nodes = NULL;
+            size_t body_len = 0;
 
+            // check if closing ) aka empty function body
+            if (ptr->kind == NVC_TOK_OP && ptr->op_kind == NVC_OP_RPAREN) {
+                goto end_fun_body;
+            }
+
+            // TODO: fun bodies DO NOT work
+
+            //            // TODO: find closing )
+            //
+            //            // find closing ) which determines how many tokens
+            //            will be passed to
+            //            // the ast
+            //            nvc_tok_t* end_ptr = ptr;
+            //            while (end_ptr) {
+            //                if (end_ptr->kind == NVC_TOK_OP &&
+            //                    end_ptr->op_kind == NVC_OP_RPAREN)
+            //                    break;
+            //
+            //                if (end_ptr->kind == NVC_TOK_SPECIAL &&
+            //                    end_ptr->spec_kind == NVC_SPEC_TOK_EOF) {
+            //                    fprintf(stderr,
+            //                            "syntax error: malformed fun decl:
+            //                            unclosed fun " "body.\n");
+            //                    nvc_free_params(params, n_params);
+            //                    goto error;
+            //                }
+            //
+            //                ++end_ptr;
+            //            }
+            //
+            //            fprintf(stdout, "scanned %ld tokens.\n", end_ptr -
+            //            ptr);
+            //
+            //            // generate ast for fun body
+            //            nvc_token_stream_t body_stream = {
+            //                .tokens = ptr,
+            //                .size = stream.size - (end_ptr - ptr),
+            //            };
+            //
+            //            nvc_ast_t* body_ast = nvc_parse(&body_stream);
+            //
+            //            body_nodes = body_ast->nodes;
+            //            body_len = body_ast->size;
+
+        end_fun_body : {
             nvc_ast_node_t* fun_decl = calloc(1, sizeof(nvc_ast_node_t));
             if (!fun_decl) {
                 fprintf(stderr, "Out of memory!\n");
-                // TODO: going to have to free body here once it's implemented!
                 nvc_free_params(params, n_params);
+                nvc_free_nodes(body_nodes, body_len);
                 goto error;
             }
             fun_decl->kind = NVC_AST_NODE_FUN_DECL;
@@ -377,11 +601,14 @@ static nvc_ast_node_t* nvc_parse_recursive(nvc_token_stream_t stream,
             fun_decl->fun_decl.return_type_name = return_type_name;
             fun_decl->fun_decl.params = params;
             fun_decl->fun_decl.n_params = n_params;
+            fun_decl->fun_decl.body = body_nodes;
+            fun_decl->fun_decl.body_len = body_len;
 
-            fprintf(stdout, "done parsing fun: %ld.\n",
-                    (ptr - stream.tokens) + 1);
+            // TODO: this is wrong TOO!
             *eaten = (ptr - stream.tokens) + 1;
+            fprintf(stdout, "done parsing fun: ate %ld tokens.\n", *eaten);
             return fun_decl;
+        }
         }
     }
 
@@ -430,10 +657,10 @@ nvc_ast_t* nvc_parse(nvc_token_stream_t* stream) {
             // increase by 50%
             capacity = (n_nodes / 2) * 3;
             // TODO: remove me
-            fprintf(stdout, "Dynamic allocation %ld -> %ld.\n", n_nodes,
+            fprintf(stdout, "Dynamic allocation (nodes) %ld -> %ld.\n", n_nodes,
                     capacity);
             // reallocate with increased capacity
-            nodes = calloc(capacity, sizeof(nvc_ast_node_t*));
+            nodes = realloc(nodes, capacity * sizeof(nvc_ast_node_t*));
             if (!nodes) {
                 fprintf(stderr, "Out of memory!\n");
                 nvc_free_nodes(nodes, n_nodes);
@@ -455,3 +682,7 @@ nvc_ast_t* nvc_parse(nvc_token_stream_t* stream) {
     ast->size = n_nodes;
     return ast;
 }
+
+#ifdef __cplusplus
+}
+#endif

@@ -19,4 +19,4 @@ add_executable(${PROJECT_NAME}
         src/nvc_compiler.c
         src/main.c
         src/nvc_lexer.c
-        src/nvc_ast.c)
+        src/nvc_ast.c include/nvc_output.h src/nvc_output.c)

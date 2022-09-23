@@ -1,3 +1,7 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <nvc_compiler.h>
 
 int main(int argc, char** argv) {
@@ -8,3 +12,7 @@ int main(int argc, char** argv) {
 
     return nvc_compile(argv[1]);
 }
+
+#ifdef __cplusplus
+}
+#endif

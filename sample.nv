@@ -1,7 +1,6 @@
-fun add(a: Int, b:Int) -> Int(
+let a = 2
 
 
-        )
 
 #
 fun add(a: Int,

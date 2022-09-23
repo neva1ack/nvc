@@ -1,3 +1,7 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <nvc_compiler.h>
 
 #include <nvc_ast.h>
@@ -14,7 +18,7 @@ static char* nvc_read_file(FILE* fp, long* fs) {
     if (fseek(fp, 0, SEEK_SET) != 0)
         goto error;
     // allocate filesize + null terminate
-    char* buf = malloc(*fs + 1);
+    char* buf = malloc((*fs + 1) * sizeof(char));
     if (!buf)
         // out of memory
         goto error;
@@ -29,19 +33,23 @@ error:
 
 static char* nvc_open_and_read_file(char* filename, long* filesize) {
     if (!filename)
-        return NULL;
+        goto error;
     // open and read file to buffer
     FILE* fp = fopen(filename, "r");
     long fs;
     char* buf = nvc_read_file(fp, &fs);
     if (!buf) {
         fclose(fp);
-        return NULL;
+        goto error;
     }
     fclose(fp);
     if (filesize)
         *filesize = fs;
     return buf;
+error:
+    if (filesize)
+        *filesize = 0;
+    return NULL;
 }
 
 int nvc_compile(char* filename) {
@@ -58,59 +66,61 @@ int nvc_compile(char* filename) {
     fputs("----- Source -----\n", stdout);
     fprintf(stdout, "%s\n", buf);
 
-    nvc_token_stream_t* stream = nvc_lexical_analysis(buf, bufsz);
+    // TODO: remove me
+    fputs("----- Tokens -----\n", stdout);
+
+    nvc_token_stream_t* stream = nvc_lexical_analysis(filename, buf, bufsz);
 
     if (!stream) {
+        free(buf);
+        // don't bother nullify pointer as it goes out of scope here
         return 1;
     }
 
     // TODO: remove me
     // debug print tokens
-    fputs("----- Tokens -----\n", stdout);
     for (size_t i = 0; i < stream->size; ++i) {
-        switch (stream->tokens[i].kind) {
-            case NVC_TOK_SYMBOL:
-                fprintf(stdout, "symbol(%s)", stream->tokens[i].symbol);
-                break;
-            case NVC_TOK_EOF: fputs("eof", stdout); break;
-            case NVC_TOK_NEWLINE: fputs("newline", stdout); break;
-            case NVC_TOK_STR_LIT:
-                fprintf(stdout, "str_lit(%s)", stream->tokens[i].str_lit);
-                break;
-            case NVC_TOK_FLOAT_LIT:
-                fprintf(stdout, "float_lit(%.2f)", stream->tokens[i].float_lit);
-                break;
-            case NVC_TOK_INT_LIT:
-                fprintf(stdout, "int_lit(%ld)", stream->tokens[i].int_lit);
-                break;
-            case NVC_TOK_OP:
-                fprintf(stdout, "op(%d)", stream->tokens[i].op_kind);
-                break;
-            case NVC_TOK_UNKNOWN:
-            default: fputs("unknown", stdout); break;
+        char* tokstr = nvc_token_to_str(stream->tokens + i);
+        if (!tokstr) {
+            nvc_free_token_stream(stream);
+            free(buf);
+            return 1;
         }
-        fputc(' ', stdout);
+        fprintf(stdout, "%s ", tokstr);
+        free(tokstr);
     }
     fputc('\n', stdout);
 
     // operate on token stream here
 
+    // TODO: remove me
+    fputs("------- AST ------\n", stdout);
+
     nvc_ast_t* ast = nvc_parse(stream);
 
     if (!ast) {
         nvc_free_token_stream(stream);
+        // don't bother nullify stream pointer as it goes out of scope here
+        free(buf);
+        // don't bother nullify pointer as it goes out of scope here
         return 1;
     }
 
     // TODO: remove me
     // debug print ast
-    fputs("----- AST -----\n", stdout);
     nvc_print_ast(ast);
 
     // operate on ast here
 
     nvc_free_ast(ast);
     nvc_free_token_stream(stream);
+    // don't bother nullify stream pointer as it goes out of scope here
+    free(buf);
+    // don't bother nullify pointer as it goes out of scope here
 
     return 0;
 }
+
+#ifdef __cplusplus
+}
+#endif
