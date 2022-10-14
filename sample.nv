@@ -1,20 +1,36 @@
-let a = 2
+# int tests #
+let a = 1
+let b = -2
+let c = 33
+let d = -33
 
+# string tests #
+let a = 'single line'
+let b = 'multi
+line'
+let c = # 'comment out of string' # '# comment in string #'
+let d = # 'multi line comment in
+multi line string' # '# comment in
+multi line string #'
 
+# decimal tests #
+let a = .1
+let b = 2.
+let c = 3.4
+let d = -.5
+let e = -6.
+let f = -7.8
 
+# unary op tests #
 #
-fun add(a: Int,
-        b: Int,
-) -> Int(
-    a + b
-)
-
-type Data(
-    a: Int,
-    b: Int,
-)
-
-fun Data.add(self: Data) -> Int(
-    self.a + self.b
-)
+let a = --2
 #
+
+# binary op tests #
+#
+let a = 0+1
+#
+
+# operator chaining tests #
+
+let a = -2+2+2*2

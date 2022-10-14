@@ -3,7 +3,7 @@ project(nvc
         VERSION 0.1.0
         LANGUAGES C)
 # C99 ISO standard
-set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD 11)
 # Require standard
 set(CMAKE_C_STANDARD_REQUIRED ON)
 # set release build
@@ -19,4 +19,6 @@ add_executable(${PROJECT_NAME}
         src/nvc_compiler.c
         src/main.c
         src/nvc_lexer.c
-        src/nvc_ast.c include/nvc_output.h src/nvc_output.c)
+        src/nvc_ast.c
+        include/nvc_output.h
+        src/nvc_output.c)

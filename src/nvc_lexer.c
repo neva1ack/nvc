@@ -9,13 +9,6 @@ extern "C" {
 #include <stdlib.h>
 #include <string.h>
 
-static inline bool nvc_is_whitespace(char c) {
-    // special whitespace conditions due to no semicolon parsing
-    return c == '\t'    // horizontal tabs
-           || c == ' '  // spaces
-        ;
-}
-
 static inline bool nvc_is_word(char c) {
     // is alpha or underscore
     return (c >= 'A' && c <= 'Z')     // alpha upper
@@ -35,6 +28,58 @@ static inline bool nvc_is_operator(char c) {
     //           c == '~' || c == '*' || c == '/' || c == ':' || c == '(' ||
     //           c == ')' || c == '[' || c == ']' || c == '^' || c == ',' || c
     //           == '.';
+}
+
+static inline bool nvc_is_number(char c) {
+    // is number or decimal point
+    return c == '.' || (c >= '0' && c <= '9');
+}
+
+static inline nvc_int nvc_parse_int(char* str, char** end) {
+    // note: this assumes str is not NULL and is null terminated
+    // note: I'm not sure how efficient this is maybe I could compile it with
+    // -O4 and replace with inline asm
+    nvc_int i = 0;
+    while (*str >= '0' && *str <= '9') {
+        i = i * 10 + (*str - '0');
+        ++str;
+    }
+    *end = str;
+    return i;
+}
+
+static inline nvc_fp nvc_parse_fp(char* str, char** end) {
+    // adapted from stb for readability and simplicity and my specific
+    // requirements see:
+    // https://github.com/nothings/stb/blob/master/stb_c_lexer.h
+    // note: this
+    // assumes str is not NULL and is null terminated note: see nvc_parse_int
+    // for optimization suggestion lhs of decimal point
+    *end = str;
+    nvc_fp fp = 0.0;
+    while (*str >= '0' && *str <= '9') {
+        fp = fp * 10 + (*str - '0');
+        ++str;
+    }
+
+    // early return without making *end -> str aka discard the value
+    if (*str != '.') return 0.0;
+
+    // rhs of decimal point
+    char* dp = str;
+    ++str;
+    nvc_fp pow = 1.0, dec = 0.0;
+    for (; *str >= '0' && *str <= '9'; pow *= 10.0) {
+        dec = dec * 10 + (*str - '0');
+        ++str;
+    }
+    fp += dec / pow;
+
+    if (*end == dp && dp + 1 == str) return 0.0;
+
+    *end = str;
+
+    return fp;
 }
 
 char* nvc_op_to_str(nvc_operator_kind_t op) {
@@ -74,7 +119,7 @@ static nvc_operator_kind_t nvc_str_to_op(char* str, size_t* operator_len) {
         // single char operator
         if (*operator_len == 1) {
             // TODO: could use array but this is more memory efficient and
-            // should have about the same speed?
+            //      should have about the same speed?
             switch (str[0]) {
                 case '<': return NVC_OP_LT;
                 case '>': return NVC_OP_GT;
@@ -129,8 +174,7 @@ static void nvc_free_tokens(nvc_tok_t* tokens, size_t len) {
             case NVC_TOK_STR_LIT:
                 // free if not NULL note: this can actually be NULL in the case
                 // of an empty literal
-                if (tokens[i].str_lit)
-                    free(tokens[i].str_lit);
+                if (tokens[i].str_lit) free(tokens[i].str_lit);
                 break;
             default: break;
         }
@@ -152,7 +196,7 @@ char* nvc_token_to_str(nvc_tok_t* token) {
         case NVC_TOK_SYMBOL: {
             // note: symbol is guaranteed non NULL unlike strlit
             // TODO: maybe use strnlen here although i think null terminate is
-            // guaranteed
+            //      guaranteed
             size_t len = 6 + 1 + strlen(token->symbol) + 1;
             // can use malloc here because we know the exact size
             char* symbolbuf = malloc(sizeof(char) * (len + 1));
@@ -164,36 +208,10 @@ char* nvc_token_to_str(nvc_tok_t* token) {
             symbolbuf[len] = '\0';
             return symbolbuf;
         }
-        case NVC_TOK_SPECIAL:
-            // TODO: this whole branch seems shit
-            switch (token->spec_kind) {
-                case NVC_SPEC_TOK_EOF: {
-                    const char* value = "eof";
-                    // TODO: maybe use strndup although this should be totally
-                    // safe
-                    char* cpy = strdup(value);
-                    if (!cpy) {
-                        fprintf(stderr, "Out of memory!\n");
-                        return NULL;
-                    }
-                    return cpy;
-                }
-                case NVC_SPEC_TOK_NEWLINE: {
-                    const char* value = "newline";
-                    // TODO: maybe use strndup although this should be totally
-                    // safe
-                    char* cpy = strdup(value);
-                    if (!cpy) {
-                        fprintf(stderr, "Out of memory!\n");
-                        return NULL;
-                    }
-                    return cpy;
-                }
-            }
         case NVC_TOK_STR_LIT: {
             if (token->str_lit) {
                 // TODO: maybe use strnlen here although i think null terminate
-                // is guaranteed
+                //      is guaranteed
                 size_t len = 3 + 1 + strlen(token->str_lit) + 1;
                 // can use malloc here because we know the exact size
                 char* strstrbuf = malloc(sizeof(char) * (len + 1));
@@ -220,19 +238,18 @@ char* nvc_token_to_str(nvc_tok_t* token) {
                 return cpy;
             }
         }
-        case NVC_TOK_FLOAT_LIT: {
+        case NVC_TOK_FP_LIT: {
             // note: I'm sure there some way to find the maximum length of a
             // double but I don't know how to do that so I'm just gonna go with
             // some arbitrarily large number as a brief look at stackoverflow
             // reveals it is probably quite large
-            uint32_t max_allocation_size = 1024;
+            uint32_t max_allocation_size = 512;
             char* dblstr = NULL;
             do {
                 // note: calloc must be used here instead of malloc to act as
                 // null terminators
-                char* dblstr = calloc(max_allocation_size, sizeof(char));
-                if (dblstr)
-                    break;
+                dblstr = calloc(max_allocation_size, sizeof(char));
+                if (dblstr) break;
                 // * (2/3)
                 max_allocation_size = (max_allocation_size / 3) * 2;
                 // note: have an at least reasonable min size
@@ -240,20 +257,19 @@ char* nvc_token_to_str(nvc_tok_t* token) {
             // check out of memory
             if (!dblstr) {
                 fprintf(stderr,
-                        "Out of memory while allocating double %d"
+                        "Out of memory while allocating double %d "
                         "bytes.\n",
                         max_allocation_size);
                 return NULL;
             }
-            snprintf(dblstr, max_allocation_size, "float(%.2f)",
-                     token->float_lit);
+            snprintf(dblstr, max_allocation_size, "fp(%.2Lf)", token->fp_lit);
             // make SURE it's null terminated
             dblstr[max_allocation_size - 1] = '\0';
             return dblstr;
         }
         case NVC_TOK_INT_LIT: {
             // note: carefully chosen value, last + 1 is for null terminator
-            uint32_t max_allocation_size = 3 + 1 + 19 + 1 + 1;
+            uint32_t max_allocation_size = 3 + 1 + 18 + 1 + 1;
             // note: calloc must be used here instead of malloc to act as null
             // terminators
             char* intstr = calloc(max_allocation_size, sizeof(char));
@@ -261,8 +277,7 @@ char* nvc_token_to_str(nvc_tok_t* token) {
                 fprintf(stderr, "Out of memory!\n");
                 return NULL;
             }
-            snprintf(intstr, max_allocation_size, "int(%ld)",
-                     token->int_lit);
+            snprintf(intstr, max_allocation_size, "int(%ld)", token->int_lit);
             // make SURE it's null terminated
             intstr[max_allocation_size - 1] = '\0';
             return intstr;
@@ -270,7 +285,7 @@ char* nvc_token_to_str(nvc_tok_t* token) {
         case NVC_TOK_OP: {
             char* opstr = nvc_op_to_str(token->op_kind);
             // TODO: pretty sure opstr is guaranteed null terminated but maybe
-            // use strnlen just in case?
+            //      use strnlen just in case?
             size_t len = 2 + 1 + strlen(opstr) + 1;
             // can use malloc here because exact size is known
             char* opstrcpy = malloc(sizeof(char) * (len + 1));
@@ -282,9 +297,6 @@ char* nvc_token_to_str(nvc_tok_t* token) {
             opstrcpy[len] = '\0';
             return opstrcpy;
         }
-        case NVC_TOK_UNKNOWN:
-        default:
-            return NULL;
     }
 
     // unreachable code
@@ -316,38 +328,15 @@ nvc_token_stream_t* nvc_lexical_analysis(char* bufname, char* buf, long bufsz) {
     while (*buf_curr != '\0') {
         // handle special chars
         switch (*buf_curr) {
-            case '\n':  // TODO: may use an is newline function in future here?
-                // cant end line while inside string literal
-                if (curr_flags & STRING_LITERAL_LF) {
-                    // TODO: syntax error
-                    fprintf(stderr,
-                            "syntax error: multiline string literals not "
-                            "supported.");
-                    nvc_free_tokens(toks, toks_size);
-                    return NULL;
-                }
-                // automatic newline folding at beginning of file and repeated
-                // newlines
-                if (toks_size > 0 && toks_curr[-1].kind != NVC_TOK_SPECIAL) {
-                    // insert newline token and advance pointer
-                    toks_curr->kind = NVC_TOK_SPECIAL;
-                    toks_curr->bufname = bufname;
-                    toks_curr->l = line_num;
-                    toks_curr->c = buf_curr - line_start_ptr;
-                    toks_curr->line = line_start_ptr;
-                    toks_curr->spec_kind = NVC_SPEC_TOK_NEWLINE;
-                    ++toks_curr;
-                    ++toks_size;
-                    ++line_num;
-                }
+            case '\n': 
+                ++line_num;
                 // eat curr and go to next
                 ++buf_curr;
                 line_start_ptr = buf_curr;
                 continue;
             case '#':
                 // don't toggle commenting if # is inside string literal
-                if (curr_flags & STRING_LITERAL_LF)
-                    break;
+                if (curr_flags & STRING_LITERAL_LF) break;
                 // toggle commenting
                 curr_flags ^= COMMENT_LF;
                 // eat curr and go to next
@@ -355,8 +344,7 @@ nvc_token_stream_t* nvc_lexical_analysis(char* bufname, char* buf, long bufsz) {
                 continue;
             case '\'':
                 // don't toggle string literals if ' is inside comment
-                if (curr_flags & COMMENT_LF)
-                    break;
+                if (curr_flags & COMMENT_LF) break;
                 // enclosing '
                 if (curr_flags & STRING_LITERAL_LF) {
                     // find starting ' note: must be on the same line if there
@@ -364,9 +352,7 @@ nvc_token_stream_t* nvc_lexical_analysis(char* bufname, char* buf, long bufsz) {
                     // state
                     char* str_lit_begin = buf_curr;
                     while (--str_lit_begin && str_lit_begin >= buf &&
-                           // TODO: may use some is newline function here in
-                           // future?
-                           *str_lit_begin != '\n' && *str_lit_begin != '\'')
+                           *str_lit_begin != '\'')
                         ;
                     // unable to find starting '
                     if (*str_lit_begin != '\'') {
@@ -402,10 +388,10 @@ nvc_token_stream_t* nvc_lexical_analysis(char* bufname, char* buf, long bufsz) {
                     }
                     // insert token and advance pointer
                     toks_curr->kind = NVC_TOK_STR_LIT;
-                    toks_curr->bufname = bufname;
-                    toks_curr->l = line_num;
-                    toks_curr->c = buf_curr - line_start_ptr;
-                    toks_curr->line = line_start_ptr;
+                    toks_curr->buf_loc.bufname = bufname;
+                    toks_curr->buf_loc.l = line_num;
+                    toks_curr->buf_loc.c = buf_curr - line_start_ptr;
+                    toks_curr->buf_loc.line = line_start_ptr;
                     ++toks_curr;
                     ++toks_size;
                 }
@@ -422,7 +408,6 @@ nvc_token_stream_t* nvc_lexical_analysis(char* bufname, char* buf, long bufsz) {
             ++buf_curr;
             continue;
         }
-
         // eat word characters and parse symbols
         char* buf_eat_start = buf_curr;
         while (nvc_is_word(*buf_curr)) {
@@ -453,14 +438,51 @@ nvc_token_stream_t* nvc_lexical_analysis(char* bufname, char* buf, long bufsz) {
             symbolcpy[symbol_len] = '\0';
             // insert symbol token and advance pointer
             toks_curr->kind = NVC_TOK_SYMBOL;
-            toks_curr->bufname = bufname;
-            toks_curr->l = line_num;
-            toks_curr->c = buf_curr - line_start_ptr;
-            toks_curr->line = line_start_ptr;
+            toks_curr->buf_loc.bufname = bufname;
+            toks_curr->buf_loc.l = line_num;
+            toks_curr->buf_loc.c = buf_curr - line_start_ptr;
+            toks_curr->buf_loc.line = line_start_ptr;
             toks_curr->symbol = symbolcpy;
             ++toks_curr;
             ++toks_size;
             continue;
+        }
+
+        // parsing numbers must be done before operators
+        if (nvc_is_number(*buf_curr)) {
+            // try parse floating point first
+            char* end;
+            nvc_fp fp = nvc_parse_fp(buf_curr, &end);
+            // parsed decimal
+            if (buf_curr != end) {
+                toks_curr->kind = NVC_TOK_FP_LIT;
+                toks_curr->buf_loc.bufname = bufname;
+                toks_curr->buf_loc.l = line_num;
+                toks_curr->buf_loc.c = buf_curr - line_start_ptr;
+                toks_curr->buf_loc.line = line_start_ptr;
+                toks_curr->fp_lit = fp;
+                ++toks_curr;
+                ++toks_size;
+                // advance buf ptr
+                buf_curr = end;
+                continue;
+            }
+            // try parse int second
+            nvc_int i = nvc_parse_int(buf_curr, &end);
+            // parsed int
+            if (buf_curr != end) {
+                toks_curr->kind = NVC_TOK_INT_LIT;
+                toks_curr->buf_loc.bufname = bufname;
+                toks_curr->buf_loc.l = line_num;
+                toks_curr->buf_loc.c = buf_curr - line_start_ptr;
+                toks_curr->buf_loc.line = line_start_ptr;
+                toks_curr->int_lit = i;
+                ++toks_curr;
+                ++toks_size;
+                // advance buf ptr
+                buf_curr = end;
+                continue;
+            }
         }
 
         // eat operator chars and parse operators
@@ -512,84 +534,18 @@ nvc_token_stream_t* nvc_lexical_analysis(char* bufname, char* buf, long bufsz) {
 
             // insert operator token and advance pointer
             toks_curr->kind = NVC_TOK_OP;
-            toks_curr->bufname = bufname;
-            toks_curr->l = line_num;
-            toks_curr->c = buf_curr - line_start_ptr;
-            toks_curr->line = line_start_ptr;
+            toks_curr->buf_loc.bufname = bufname;
+            toks_curr->buf_loc.l = line_num;
+            toks_curr->buf_loc.c = buf_curr - line_start_ptr;
+            toks_curr->buf_loc.line = line_start_ptr;
             toks_curr->op_kind = op;
             ++toks_size;
             ++toks_curr;
             continue;
         }
 
-        // parse number literals
-        char* endptr = NULL;
-        double dlit = strtod(buf_curr, &endptr);
-        if (endptr && endptr != buf_curr) {
-            // search for decimal point
-            void* srch = memchr(buf_curr, '.', endptr - buf_curr);
-            // could not find a decimal point
-            if (!srch) {
-                // parse as int
-                endptr = NULL;
-                int64_t ilit = strtoll(buf_curr, &endptr, 10);
-                // parsed something (is int literal)
-                if (endptr && endptr != buf_curr) {
-                    // TODO: check for integer overflow
-                    // insert token and advance token pointer
-                    toks_curr->kind = NVC_TOK_INT_LIT;
-                    toks_curr->bufname = bufname;
-                    toks_curr->l = line_num;
-                    toks_curr->c = buf_curr - line_start_ptr;
-                    toks_curr->line = line_start_ptr;
-                    toks_curr->int_lit = ilit;
-                    ++toks_size;
-                    ++toks_curr;
-                    // advance buf pointer
-                    buf_curr = endptr;
-                    continue;
-                }
-            }
-            // if could not be parsed as int or contains a decimal
-            // point the double value will be used
-
-            // TODO: check for double losing precision
-
-            // insert toke and advance token pointer
-            toks_curr->kind = NVC_TOK_FLOAT_LIT;
-            toks_curr->bufname = bufname;
-            toks_curr->l = line_num;
-            toks_curr->c = buf_curr - line_start_ptr;
-            toks_curr->line = line_start_ptr;
-            toks_curr->float_lit = dlit;
-            ++toks_size;
-            ++toks_curr;
-            // advance buf pointer
-            buf_curr = endptr;
-            continue;
-        }
-
         // advance pointer
         ++buf_curr;
-    }
-
-    // insert eof token, note: does NOT advance pointer
-    // note: eof acts as newline so can substitute last newline
-    if (toks_size > 0 && toks_curr[-1].kind == NVC_TOK_SPECIAL) {
-        toks_curr[-1].kind = NVC_TOK_SPECIAL;
-        toks_curr[-1].bufname = bufname;
-        toks_curr[-1].l = line_num;
-        toks_curr[-1].c = buf_curr - line_start_ptr;
-        toks_curr[-1].line = line_start_ptr;
-        toks_curr[-1].spec_kind = NVC_SPEC_TOK_EOF;
-    } else {
-        toks_curr->kind = NVC_TOK_SPECIAL;
-        toks_curr->bufname = bufname;
-        toks_curr->l = line_num;
-        toks_curr->c = buf_curr - line_start_ptr;
-        toks_curr->line = line_start_ptr;
-        toks_curr->spec_kind = NVC_SPEC_TOK_EOF;
-        ++toks_size;
     }
 
     // resize toks to save memory

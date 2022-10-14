@@ -9,6 +9,11 @@ extern "C" {
 #include <stdint.h>
 #include <stdio.h>
 
+#include <nvc_output.h>
+
+typedef int64_t nvc_int;
+typedef long double nvc_fp;
+
 typedef enum {
     NVC_OP_UNKNOWN = -1,
 
@@ -33,6 +38,7 @@ typedef enum {
     // NVC_OP_NEG_EQ = 15, // ~=
     NVC_OP_POW_EQ = 16,  // ^=
 
+    // special
     NVC_OP_TYPE_ANNOTATION = 17,  // :
     NVC_OP_LPAREN = 18,           // (
     NVC_OP_RPAREN = 19,           // )
@@ -44,42 +50,23 @@ typedef enum {
 } nvc_operator_kind_t;
 
 typedef enum {
-    NVC_SPEC_TOK_NEWLINE = 0,
-    NVC_SPEC_TOK_EOF = 1,
-} nvc_special_kind_t;
-
-typedef enum {
-    NVC_TOK_UNKNOWN = -1,
-
     // string literals
     NVC_TOK_STR_LIT = 0,
-
     // number literals
-    NVC_TOK_INT_LIT = 10,
-    NVC_TOK_FLOAT_LIT = 11,
-
+    NVC_TOK_INT_LIT = 1,
+    NVC_TOK_FP_LIT = 2,
     // symbols
-    NVC_TOK_SYMBOL = 20,
-
+    NVC_TOK_SYMBOL = 3,
     // operators
-    NVC_TOK_OP = 30,
-
-    // special tokens
-    NVC_TOK_SPECIAL = 100,
+    NVC_TOK_OP = 4,
 } nvc_tok_kind_t;
 
 typedef struct {
     nvc_tok_kind_t kind;
-    // note: next 4 fields are used for reporting errors/warnings
-    char* bufname;  // this does NOT need to be freed, it is not owned
-    char* line;     // this does NOT need to be freed, it is just a reference
-                    // into the passed buffer
-    uint32_t l, c;  // line number and char number in source of token (for
-                    // errors/warnings)
+    nvc_buffer_location_t buf_loc;
     union {
-        int64_t int_lit;
-        double float_lit;
-        nvc_special_kind_t spec_kind;
+        nvc_int int_lit;  // note: this cannot (and will not) be negative
+        nvc_fp fp_lit;    // note: this cannot (and will not) be negative
         nvc_operator_kind_t op_kind;
         char* symbol;   // this must be freed after use and will never be NULL
         char* str_lit;  // this must be freed after use UNLESS NULL because
@@ -88,8 +75,9 @@ typedef struct {
 } nvc_tok_t;
 
 typedef struct {
-    nvc_tok_t* tokens;
-    size_t size;
+    nvc_tok_t* tokens;  // this will be automatically freed when
+                        // nvc_free_token_stream on this
+    uint32_t size;
 } nvc_token_stream_t;
 
 char* nvc_op_to_str(nvc_operator_kind_t op);
